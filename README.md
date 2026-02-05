@@ -1,4 +1,4 @@
-# Treinamento AWS SageMaker - Universidade de Portugal
+# Treinamento AWS SageMaker
 
 Bem-vindo ao treinamento prático de Amazon SageMaker! Este guia foi desenvolvido para ajudar iniciantes a compreender e utilizar os principais recursos do AWS SageMaker para projetos de Machine Learning.
 
