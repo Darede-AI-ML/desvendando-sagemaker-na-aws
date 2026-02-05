@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template para criacao do Amazon SageMaker Domain para treinamento'
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: 'sagemaker-training-domain'
+    Description: 'Nome do SageMaker Domain'
+    AllowedPattern: '^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}'
+    
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: 'ID da VPC onde o SageMaker Domain sera criado'
+    
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: 'Lista de Subnet IDs para o SageMaker Domain (minimo 2 para alta disponibilidade)'
+    
+  AuthMode:
+    Type: String
+    Default: 'IAM'
+    AllowedValues:
+      - 'IAM'
+      - 'SSO'
+    Description: 'Modo de autenticacao: IAM ou AWS SSO'
+    
+  EnvironmentName:
+    Type: String
+    Default: 'training'
+    Description: 'Nome do ambiente (usado para tags)'
+    AllowedValues:
+      - 'training'
+      - 'development'
+      - 'production'
+      
+  UserProfileName:
+    Type: String
+    Default: 'default-user'
+    Description: 'Nome do perfil de usuario inicial'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'Configuracoes do Domain'
+        Parameters:
+          - DomainName
+          - AuthMode
+          - EnvironmentName
+      - Label:
+          default: 'Configuracoes de Rede'
+        Parameters:
+          - VpcId
+          - SubnetIds
+      - Label:
+          default: 'Configuracoes de Usuario'
+        Parameters:
+          - UserProfileName
+    ParameterLabels:
+      DomainName:
+        default: 'Nome do Domain'
+      VpcId:
+        default: 'VPC ID'
+      SubnetIds:
+        default: 'Subnet IDs'
+
+Resources:
+  # Security Group para o SageMaker Domain
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${DomainName}-sg'
+      GroupDescription: 'Security Group para SageMaker Domain'
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: 'Permitir todo trafego de saida'
+      Tags:
+        - Key: Name
+          Value: !Sub '${DomainName}-sg'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Regra de entrada para comunicacao interna do SageMaker
+  SageMakerSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SageMakerSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+      Description: 'Permitir comunicacao entre recursos SageMaker'
+
+  # IAM Role para execucao do SageMaker
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${DomainName}-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}'
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::*'
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogStreams'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${DomainName}-execution-role'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # SageMaker Domain
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      AuthMode: !Ref AuthMode
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
+        SharingSettings:
+          NotebookOutputOption: Allowed
+          S3OutputPath: !Sub 's3://sagemaker-${AWS::Region}-${AWS::AccountId}/sharing'
+        JupyterServerAppSettings:
+          DefaultResourceSpec:
+            InstanceType: system
+            SageMakerImageArn: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:image/jupyter-server-3'
+        KernelGatewayAppSettings:
+          DefaultResourceSpec:
+            InstanceType: ml.t3.medium
+            SageMakerImageArn: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:image/datascience-1.0'
+      SubnetIds: !Ref SubnetIds
+      VpcId: !Ref VpcId
+      AppNetworkAccessType: PublicInternetOnly
+      Tags:
+        - Key: Name
+          Value: !Ref DomainName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # User Profile inicial
+  SageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !Ref SageMakerDomain
+      UserProfileName: !Ref UserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref UserProfileName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  DomainId:
+    Description: 'ID do SageMaker Domain criado'
+    Value: !Ref SageMakerDomain
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainId'
+      
+  DomainArn:
+    Description: 'ARN do SageMaker Domain'
+    Value: !GetAtt SageMakerDomain.DomainArn
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainArn'
+      
+  DomainUrl:
+    Description: 'URL do SageMaker Domain'
+    Value: !GetAtt SageMakerDomain.Url
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainUrl'
+      
+  ExecutionRoleArn:
+    Description: 'ARN da IAM Role de execucao'
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ExecutionRoleArn'
+      
+  SecurityGroupId:
+    Description: 'ID do Security Group'
+    Value: !Ref SageMakerSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+      
+  UserProfileName:
+    Description: 'Nome do User Profile criado'
+    Value: !Ref UserProfileName
+    Export:
+      Name: !Sub '${AWS::StackName}-UserProfileName'
+      
+  S3BucketName:
+    Description: 'Nome do bucket S3 default do SageMaker'
+    Value: !Sub 'sagemaker-${AWS::Region}-${AWS::AccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'

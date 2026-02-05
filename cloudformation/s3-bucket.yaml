@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template para criacao de bucket S3 para projetos SageMaker'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'sagemaker-training'
+    Description: 'Nome do projeto (usado no nome do bucket)'
+    AllowedPattern: '^[a-z0-9-]{3,40}$'
+    ConstraintDescription: 'Apenas letras minusculas, numeros e hifens'
+    
+  EnvironmentName:
+    Type: String
+    Default: 'dev'
+    Description: 'Nome do ambiente'
+    AllowedValues:
+      - 'dev'
+      - 'training'
+      - 'staging'
+      - 'prod'
+      
+  EnableVersioning:
+    Type: String
+    Default: 'true'
+    Description: 'Habilitar versionamento de objetos'
+    AllowedValues:
+      - 'true'
+      - 'false'
+      
+  DataRetentionDays:
+    Type: Number
+    Default: 90
+    Description: 'Dias para manter objetos antes de mover para Glacier'
+    MinValue: 30
+    MaxValue: 365
+    
+  EnablePublicAccess:
+    Type: String
+    Default: 'false'
+    Description: 'Permitir acesso publico (NAO recomendado)'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  EnableVersioningCondition: !Equals [!Ref EnableVersioning, 'true']
+  BlockPublicAccess: !Equals [!Ref EnablePublicAccess, 'false']
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'Configuracoes do Bucket'
+        Parameters:
+          - ProjectName
+          - EnvironmentName
+      - Label:
+          default: 'Configuracoes de Seguranca'
+        Parameters:
+          - EnablePublicAccess
+          - EnableVersioning
+      - Label:
+          default: 'Configuracoes de Lifecycle'
+        Parameters:
+          - DataRetentionDays
+
+Resources:
+  # Bucket S3 principal
+  SageMakerDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${EnvironmentName}-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: !If [EnableVersioningCondition, Enabled, Suspended]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !If [BlockPublicAccess, true, false]
+        BlockPublicPolicy: !If [BlockPublicAccess, true, false]
+        IgnorePublicAcls: !If [BlockPublicAccess, true, false]
+        RestrictPublicBuckets: !If [BlockPublicAccess, true, false]
+      LifecycleConfiguration:
+        Rules:
+          - Id: MoveToGlacierAfterRetentionPeriod
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref DataRetentionDays
+                StorageClass: GLACIER
+            NoncurrentVersionTransitions:
+              - TransitionInDays: 30
+                StorageClass: GLACIER
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 180
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedHeaders:
+              - '*'
+            MaxAge: 3000
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-data'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Purpose
+          Value: SageMaker ML Data
+
+  # Bucket Policy para acesso do SageMaker
+  SageMakerDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SageMakerDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSageMakerAccess
+            Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+            Resource:
+              - !Sub '${SageMakerDataBucket.Arn}/*'
+              - !GetAtt SageMakerDataBucket.Arn
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${SageMakerDataBucket.Arn}/*'
+              - !GetAtt SageMakerDataBucket.Arn
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          - Sid: DenyUnencryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${SageMakerDataBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'AES256'
+
+  # Bucket para outputs e artefatos
+  SageMakerOutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${EnvironmentName}-outputs-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldTrainingOutputs
+            Status: Enabled
+            ExpirationInDays: 365
+            Prefix: 'training-outputs/'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-outputs'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Purpose
+          Value: SageMaker ML Outputs
+
+  # Bucket para logs
+  SageMakerLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${EnvironmentName}-logs-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-logs'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # EventBridge rule para monitorar uploads
+  S3UploadEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-s3-upload-monitor'
+      Description: 'Monitora uploads no bucket de dados'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - PutObject
+            - CompleteMultipartUpload
+          requestParameters:
+            bucketName:
+              - !Ref SageMakerDataBucket
+      State: ENABLED
+
+Outputs:
+  DataBucketName:
+    Description: 'Nome do bucket de dados'
+    Value: !Ref SageMakerDataBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-DataBucket'
+      
+  DataBucketArn:
+    Description: 'ARN do bucket de dados'
+    Value: !GetAtt SageMakerDataBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DataBucketArn'
+      
+  DataBucketRegionalDomainName:
+    Description: 'Domain name regional do bucket'
+    Value: !GetAtt SageMakerDataBucket.RegionalDomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DataBucketDomain'
+      
+  OutputBucketName:
+    Description: 'Nome do bucket de outputs'
+    Value: !Ref SageMakerOutputBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-OutputBucket'
+      
+  OutputBucketArn:
+    Description: 'ARN do bucket de outputs'
+    Value: !GetAtt SageMakerOutputBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OutputBucketArn'
+      
+  LogsBucketName:
+    Description: 'Nome do bucket de logs'
+    Value: !Ref SageMakerLogsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-LogsBucket'
+      
+  DataS3Uri:
+    Description: 'S3 URI do bucket de dados'
+    Value: !Sub 's3://${SageMakerDataBucket}/'
+    Export:
+      Name: !Sub '${AWS::StackName}-DataS3Uri'
+      
+  OutputS3Uri:
+    Description: 'S3 URI do bucket de outputs'
+    Value: !Sub 's3://${SageMakerOutputBucket}/'
+    Export:
+      Name: !Sub '${AWS::StackName}-OutputS3Uri'
+
+  SuggestedFolderStructure:
+    Description: 'Estrutura de pastas sugerida'
+    Value: !Sub |
+      s3://${SageMakerDataBucket}/
+        ├── raw/              # Dados brutos
+        ├── processed/        # Dados processados
+        ├── train/            # Dados de treino
+        ├── validation/       # Dados de validacao
+        ├── test/             # Dados de teste
+        └── external/         # Dados externos
+      
+      s3://${SageMakerOutputBucket}/
+        ├── models/           # Modelos treinados
+        ├── training-outputs/ # Outputs de treino
+        ├── experiments/      # Experimentos
+        └── predictions/      # Predicoes
