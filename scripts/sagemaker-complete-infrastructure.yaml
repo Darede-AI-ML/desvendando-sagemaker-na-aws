@@ -1,0 +1,738 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Template completo para criacao de infraestrutura SageMaker AI.
+  Inclui: VPC, Subnets, Internet Gateway, NAT Gateway, SageMaker Domain e Usuario IAM.
+  
+  Autor: Treinamento AWS SageMaker - Universidade Portugal
+  Versao: 1.0
+
+# =============================================================================
+# PARAMETROS
+# =============================================================================
+Parameters:
+  # Configuracoes Gerais
+  ProjectName:
+    Type: String
+    Default: 'sagemaker-training'
+    Description: 'Nome do projeto (usado como prefixo para recursos)'
+    AllowedPattern: '^[a-z0-9-]{3,30}$'
+    ConstraintDescription: 'Apenas letras minusculas, numeros e hifens (3-30 caracteres)'
+
+  EnvironmentName:
+    Type: String
+    Default: 'dev'
+    Description: 'Nome do ambiente'
+    AllowedValues:
+      - 'dev'
+      - 'training'
+      - 'staging'
+      - 'prod'
+
+  # Configuracoes de Rede
+  VpcCIDR:
+    Type: String
+    Default: '10.0.0.0/16'
+    Description: 'CIDR block para a VPC'
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  PublicSubnet1CIDR:
+    Type: String
+    Default: '10.0.1.0/24'
+    Description: 'CIDR block para Subnet Publica 1'
+
+  PublicSubnet2CIDR:
+    Type: String
+    Default: '10.0.2.0/24'
+    Description: 'CIDR block para Subnet Publica 2'
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: '10.0.10.0/24'
+    Description: 'CIDR block para Subnet Privada 1'
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: '10.0.20.0/24'
+    Description: 'CIDR block para Subnet Privada 2'
+
+  # Configuracoes do SageMaker
+  SageMakerDomainName:
+    Type: String
+    Default: 'sagemaker-studio-domain'
+    Description: 'Nome do SageMaker Domain'
+    AllowedPattern: '^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}'
+
+  DefaultInstanceType:
+    Type: String
+    Default: 'ml.t3.medium'
+    Description: 'Tipo de instancia padrao para notebooks'
+    AllowedValues:
+      - 'ml.t3.medium'
+      - 'ml.t3.large'
+      - 'ml.t3.xlarge'
+      - 'ml.m5.large'
+      - 'ml.m5.xlarge'
+
+  # Configuracoes do Usuario IAM
+  IAMUserName:
+    Type: String
+    Default: 'sagemaker-user'
+    Description: 'Nome do usuario IAM para acesso ao SageMaker'
+    AllowedPattern: '^[a-zA-Z0-9_+=,.@-]{1,64}$'
+
+  CreateIAMUserAccessKey:
+    Type: String
+    Default: 'false'
+    Description: 'Criar access key para o usuario IAM?'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  # Configuracoes do User Profile
+  SageMakerUserProfileName:
+    Type: String
+    Default: 'default-user'
+    Description: 'Nome do User Profile no SageMaker Domain'
+
+# =============================================================================
+# METADATA - Interface do Console
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: '1. Configuracoes Gerais'
+        Parameters:
+          - ProjectName
+          - EnvironmentName
+      - Label:
+          default: '2. Configuracoes de Rede (VPC)'
+        Parameters:
+          - VpcCIDR
+          - PublicSubnet1CIDR
+          - PublicSubnet2CIDR
+          - PrivateSubnet1CIDR
+          - PrivateSubnet2CIDR
+      - Label:
+          default: '3. Configuracoes do SageMaker'
+        Parameters:
+          - SageMakerDomainName
+          - SageMakerUserProfileName
+          - DefaultInstanceType
+      - Label:
+          default: '4. Configuracoes do Usuario IAM'
+        Parameters:
+          - IAMUserName
+          - CreateIAMUserAccessKey
+    ParameterLabels:
+      ProjectName:
+        default: 'Nome do Projeto'
+      EnvironmentName:
+        default: 'Ambiente'
+      VpcCIDR:
+        default: 'VPC CIDR'
+      SageMakerDomainName:
+        default: 'Nome do Domain'
+      IAMUserName:
+        default: 'Nome do Usuario IAM'
+
+# =============================================================================
+# CONDITIONS
+# =============================================================================
+Conditions:
+  CreateAccessKey: !Equals [!Ref CreateIAMUserAccessKey, 'true']
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+Resources:
+
+  # ===========================================================================
+  # SECAO 1: VPC E NETWORKING
+  # ===========================================================================
+
+  # VPC Principal
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-vpc'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-igw'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Subnets Publicas
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-public-subnet-1'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Public
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-public-subnet-2'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Public
+
+  # Subnets Privadas
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-private-subnet-1'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Private
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-private-subnet-2'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Type
+          Value: Private
+
+  # Elastic IP para NAT Gateway
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-nat-eip'
+
+  # NAT Gateway (para subnets privadas acessarem internet)
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-nat-gateway'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Route Table Publica
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-public-rt'
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # Route Table Privada
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-private-rt'
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  # ===========================================================================
+  # SECAO 2: SECURITY GROUPS
+  # ===========================================================================
+
+  # Security Group para SageMaker
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-sg'
+      GroupDescription: 'Security Group para SageMaker Domain'
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: 'Permitir todo trafego de saida'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-sg'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Regra de entrada para comunicacao interna do SageMaker
+  SageMakerSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SageMakerSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+      Description: 'Permitir comunicacao entre recursos SageMaker'
+
+  # ===========================================================================
+  # SECAO 3: IAM ROLES E POLICIES
+  # ===========================================================================
+
+  # IAM Role para execucao do SageMaker
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess'
+      Policies:
+        - PolicyName: S3FullAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::${ProjectName}-*'
+                  - 'arn:aws:s3:::*sagemaker*'
+              - Effect: Allow
+                Action:
+                  - 's3:ListAllMyBuckets'
+                Resource: '*'
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:DescribeRepositories'
+                  - 'ecr:ListImages'
+                Resource: '*'
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:GetLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*'
+        - PolicyName: KMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'kms:Encrypt'
+                  - 'kms:Decrypt'
+                  - 'kms:ReEncrypt*'
+                  - 'kms:GenerateDataKey*'
+                  - 'kms:DescribeKey'
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-execution-role'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ===========================================================================
+  # SECAO 4: SAGEMAKER DOMAIN
+  # ===========================================================================
+
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    DependsOn:
+      - NatGateway
+      - SageMakerExecutionRole
+    Properties:
+      DomainName: !Ref SageMakerDomainName
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
+        SharingSettings:
+          NotebookOutputOption: Allowed
+          S3OutputPath: !Sub 's3://sagemaker-${AWS::Region}-${AWS::AccountId}/sharing'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      VpcId: !Ref VPC
+      AppNetworkAccessType: PublicInternetOnly
+      Tags:
+        - Key: Name
+          Value: !Ref SageMakerDomainName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ===========================================================================
+  # SECAO 5: SAGEMAKER USER PROFILE
+  # ===========================================================================
+
+  SageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !Ref SageMakerDomain
+      UserProfileName: !Ref SageMakerUserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref SageMakerUserProfileName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ===========================================================================
+  # SECAO 6: USUARIO IAM
+  # ===========================================================================
+
+  # Grupo IAM para usuarios SageMaker
+  SageMakerUsersGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-users'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess'
+
+  # Politica adicional para o grupo
+  SageMakerUsersPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${EnvironmentName}-sagemaker-users-policy'
+      Groups:
+        - !Ref SageMakerUsersGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Acesso ao SageMaker Studio
+          - Sid: SageMakerStudioAccess
+            Effect: Allow
+            Action:
+              - 'sagemaker:CreatePresignedDomainUrl'
+              - 'sagemaker:DescribeDomain'
+              - 'sagemaker:ListDomains'
+              - 'sagemaker:DescribeUserProfile'
+              - 'sagemaker:ListUserProfiles'
+              - 'sagemaker:ListApps'
+              - 'sagemaker:CreateApp'
+              - 'sagemaker:DeleteApp'
+              - 'sagemaker:DescribeApp'
+            Resource: '*'
+          # Acesso a S3 para dados
+          - Sid: S3DataAccess
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+            Resource:
+              - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}/*'
+              - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}'
+              - !Sub 'arn:aws:s3:::${ProjectName}-*/*'
+              - !Sub 'arn:aws:s3:::${ProjectName}-*'
+          # Criar buckets S3
+          - Sid: S3BucketCreation
+            Effect: Allow
+            Action:
+              - 's3:CreateBucket'
+              - 's3:ListAllMyBuckets'
+            Resource: '*'
+          # CloudWatch Logs (visualizar logs)
+          - Sid: CloudWatchLogsAccess
+            Effect: Allow
+            Action:
+              - 'logs:DescribeLogGroups'
+              - 'logs:DescribeLogStreams'
+              - 'logs:GetLogEvents'
+              - 'logs:FilterLogEvents'
+            Resource: '*'
+          # IAM (apenas para passar roles)
+          - Sid: IAMPassRole
+            Effect: Allow
+            Action:
+              - 'iam:PassRole'
+            Resource: !GetAtt SageMakerExecutionRole.Arn
+            Condition:
+              StringEquals:
+                'iam:PassedToService': 'sagemaker.amazonaws.com'
+
+  # Usuario IAM
+  SageMakerIAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref IAMUserName
+      Groups:
+        - !Ref SageMakerUsersGroup
+      # Login Profile para acesso via console AWS
+      LoginProfile:
+        Password: !Sub '${ProjectName}Temp123!'
+        PasswordResetRequired: true
+      Tags:
+        - Key: Name
+          Value: !Ref IAMUserName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Purpose
+          Value: SageMaker Training User
+
+  # Access Key (opcional - para acesso programatico)
+  SageMakerIAMUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Condition: CreateAccessKey
+    Properties:
+      UserName: !Ref SageMakerIAMUser
+      Status: Active
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+
+  # VPC Outputs
+  VPCId:
+    Description: 'ID da VPC criada'
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VPCId'
+
+  VPCCidr:
+    Description: 'CIDR da VPC'
+    Value: !Ref VpcCIDR
+    Export:
+      Name: !Sub '${AWS::StackName}-VPCCidr'
+
+  PublicSubnet1Id:
+    Description: 'ID da Subnet Publica 1'
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet1'
+
+  PublicSubnet2Id:
+    Description: 'ID da Subnet Publica 2'
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet2'
+
+  PrivateSubnet1Id:
+    Description: 'ID da Subnet Privada 1'
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet1'
+
+  PrivateSubnet2Id:
+    Description: 'ID da Subnet Privada 2'
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet2'
+
+  NatGatewayIP:
+    Description: 'IP do NAT Gateway'
+    Value: !Ref NatGatewayEIP
+    Export:
+      Name: !Sub '${AWS::StackName}-NatGatewayIP'
+
+  # SageMaker Outputs
+  SageMakerDomainId:
+    Description: 'ID do SageMaker Domain'
+    Value: !Ref SageMakerDomain
+    Export:
+      Name: !Sub '${AWS::StackName}-SageMakerDomainId'
+
+  SageMakerDomainArn:
+    Description: 'ARN do SageMaker Domain'
+    Value: !GetAtt SageMakerDomain.DomainArn
+    Export:
+      Name: !Sub '${AWS::StackName}-SageMakerDomainArn'
+
+  SageMakerDomainUrl:
+    Description: 'URL do SageMaker Domain'
+    Value: !GetAtt SageMakerDomain.Url
+    Export:
+      Name: !Sub '${AWS::StackName}-SageMakerDomainUrl'
+
+  SageMakerUserProfileName:
+    Description: 'Nome do User Profile criado'
+    Value: !Ref SageMakerUserProfileName
+    Export:
+      Name: !Sub '${AWS::StackName}-UserProfileName'
+
+  SageMakerExecutionRoleArn:
+    Description: 'ARN da Role de Execucao do SageMaker'
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ExecutionRoleArn'
+
+  SageMakerSecurityGroupId:
+    Description: 'ID do Security Group do SageMaker'
+    Value: !Ref SageMakerSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+
+  # IAM User Outputs
+  IAMUserName:
+    Description: 'Nome do usuario IAM criado'
+    Value: !Ref SageMakerIAMUser
+    Export:
+      Name: !Sub '${AWS::StackName}-IAMUserName'
+
+  IAMUserArn:
+    Description: 'ARN do usuario IAM'
+    Value: !GetAtt SageMakerIAMUser.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-IAMUserArn'
+
+  IAMUserLoginUrl:
+    Description: 'URL para login do usuario IAM'
+    Value: !Sub 'https://${AWS::AccountId}.signin.aws.amazon.com/console'
+    Export:
+      Name: !Sub '${AWS::StackName}-LoginUrl'
+
+  IAMUserInitialPassword:
+    Description: 'Senha inicial do usuario (DEVE SER ALTERADA NO PRIMEIRO LOGIN)'
+    Value: !Sub '${ProjectName}Temp123!'
+
+  IAMUserAccessKeyId:
+    Description: 'Access Key ID do usuario (se criado)'
+    Condition: CreateAccessKey
+    Value: !Ref SageMakerIAMUserAccessKey
+    Export:
+      Name: !Sub '${AWS::StackName}-AccessKeyId'
+
+  IAMUserSecretAccessKey:
+    Description: 'Secret Access Key do usuario (GUARDE EM LOCAL SEGURO)'
+    Condition: CreateAccessKey
+    Value: !GetAtt SageMakerIAMUserAccessKey.SecretAccessKey
+
+  # Instrucoes
+  NextSteps:
+    Description: 'Proximos passos apos deploy'
+    Value: |
+      1. Acesse o console AWS com o usuario IAM criado
+      2. ALTERE a senha temporaria no primeiro login
+      3. Navegue ate SageMaker > Domains
+      4. Selecione o Domain e User Profile criados
+      5. Clique em Launch > Studio para abrir o SageMaker Studio
+      6. Aguarde o ambiente carregar (primeira vez pode levar alguns minutos)
+
+  DefaultS3Bucket:
+    Description: 'Bucket S3 padrao do SageMaker'
+    Value: !Sub 'sagemaker-${AWS::Region}-${AWS::AccountId}'
+    Export:
+      Name: !Sub '${AWS::StackName}-DefaultS3Bucket'
