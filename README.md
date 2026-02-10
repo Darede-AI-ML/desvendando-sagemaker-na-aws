@@ -142,7 +142,12 @@ Finalize seu ambiente adequadamente e aprenda boas práticas.
 
 ## Recursos Adicionais
 
-### Templates de Infraestrutura
+### Scripts de Infraestrutura (Recomendado)
+- [Infraestrutura Completa (VPC + SageMaker + IAM)](scripts/sagemaker-complete-infrastructure.yaml) - **Template principal**
+- [Instruções de Deploy](scripts/README.md)
+- [Parâmetros de Exemplo](scripts/parameters.json)
+
+### Templates CloudFormation (Modulares)
 - [CloudFormation - SageMaker Domain](cloudformation/sagemaker-domain.yaml)
 - [CloudFormation - S3 Bucket](cloudformation/s3-bucket.yaml)
 

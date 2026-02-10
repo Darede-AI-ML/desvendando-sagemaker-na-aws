@@ -15,6 +15,22 @@ Ao final deste módulo, você será capaz de:
 
 ---
 
+## Material Prático Disponível
+
+Para este módulo, disponibilizamos um **notebook pronto** para execução:
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `scripts/exemplo-treinamento-sagemaker.ipynb` | **Notebook completo** com SageMaker Training Job |
+
+### Como Usar
+
+1. Faça upload do notebook para o JupyterLab no SageMaker Studio
+2. Execute célula por célula
+3. O notebook demonstra todo o fluxo: preparação de dados → upload S3 → Training Job → métricas
+
+---
+
 ## 1. Treino Local vs. Treino Gerenciado
 
 ### Comparação

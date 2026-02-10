@@ -82,9 +82,59 @@ graph TB
 
 ---
 
-## 2. Pré-requisitos para Criação do Domain
+## 2. Template Completo (Recomendado)
 
-Antes de criar o Domain, você precisa ter:
+Para este treinamento, disponibilizamos um **template CloudFormation completo** que cria toda a infraestrutura necessária de uma só vez:
+
+📁 **Localização:** `scripts/sagemaker-complete-infrastructure.yaml`
+
+### O que o Template Completo Cria
+
+| Recurso | Descrição |
+|---------|-----------|
+| **VPC** | Rede virtual isolada com DNS habilitado |
+| **4 Subnets** | 2 públicas + 2 privadas em AZs diferentes |
+| **Internet Gateway** | Acesso à internet para subnets públicas |
+| **NAT Gateway** | Acesso à internet para subnets privadas |
+| **Security Group** | Firewall para recursos SageMaker |
+| **SageMaker Domain** | Ambiente principal do SageMaker AI |
+| **User Profile** | Perfil de usuário para acesso ao Studio |
+| **IAM User** | Usuário para login no console AWS |
+| **IAM Role** | Permissões de execução do SageMaker |
+
+### Deploy Rápido
+
+```bash
+# Navegar para scripts
+cd scripts
+
+# Deploy completo
+aws cloudformation create-stack \
+  --stack-name sagemaker-training-infrastructure \
+  --template-body file://sagemaker-complete-infrastructure.yaml \
+  --parameters file://parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-central-1
+
+# Aguardar (10-15 minutos)
+aws cloudformation wait stack-create-complete \
+  --stack-name sagemaker-training-infrastructure \
+  --region eu-central-1
+
+# Ver outputs
+aws cloudformation describe-stacks \
+  --stack-name sagemaker-training-infrastructure \
+  --query 'Stacks[0].Outputs' \
+  --region eu-central-1
+```
+
+Se preferir usar o template completo, pule para a **Seção 6: Executando o Deploy** ou consulte as instruções em [scripts/README.md](../scripts/README.md).
+
+---
+
+## 3. Pré-requisitos (Para Deploy Modular)
+
+Se você preferir criar os recursos separadamente ou já possui uma VPC, continue com esta seção.
 
 ### Informações de Rede
 - ✅ **VPC ID**: Identificador da Virtual Private Cloud
